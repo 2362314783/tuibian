@@ -282,7 +282,7 @@ def evaluate_consistency(file_path, model_name, limit=None):
     return original_accuracy, transformed_accuracy
 
 if __name__ == "__main__":
-    file_path = r"D:\Desktop\蜕变测试代码\transformed_sentences_gpt-4o_20241127_172554.csv"
+    file_path = r"D:\Desktop\蜕变测试代码\transformed_sentences_claude-3.5-sonnet_20241126_182939.csv"
     # model_name = "gpt-4o"
     model_name = "claude-3.5-sonnet"
     limit = 100  # 设置为None测试所有样本，或设置具体数字限制测试样本数
