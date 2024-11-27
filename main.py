@@ -10,6 +10,7 @@ from queue import Queue
 import threading
 import re
 
+#v.1.0版本
 # 使用deepbricks的 api
 client = OpenAI(
     api_key='sk-EQbMNyt4VCy3cbxKoOqzK4vgpMBhCrb8a30oOkDE8aGsQlj0',
