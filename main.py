@@ -8,9 +8,7 @@ import concurrent.futures
 from tqdm import tqdm
 from queue import Queue
 import threading
-import re
 
-#v.1.0版本
 # 使用deepbricks的 api
 client = OpenAI(
     api_key='sk-EQbMNyt4VCy3cbxKoOqzK4vgpMBhCrb8a30oOkDE8aGsQlj0',
@@ -19,8 +17,6 @@ client = OpenAI(
 
 # 配置参数
 CONFIG = {
-    'max_retries': 3,
-    'retry_delay': 2,  # seconds
     'max_workers': 10,  # 最大线程数
 }
 
@@ -60,31 +56,6 @@ def get_file_label_mapping(file_path):
         'label_0_meaning': 'ethical',    # 默认映射
         'label_1_meaning': 'unethical'
     })
-
-def extract_json_with_regex(content):
-    """使用正则表达式从文本中提取JSON信息"""
-    import re
-    
-    # 提取转换后的句子
-    transformed_sentence_match = re.search(r'"transformed_sentence":\s*"([^"]+)"', content)
-    transformed_sentence = transformed_sentence_match.group(1) if transformed_sentence_match else None
-    
-    # 提取转换后的标签
-    transformed_label_match = re.search(r'"transformed_label":\s*(\d+)', content)
-    transformed_label = int(transformed_label_match.group(1)) if transformed_label_match else None
-    
-    # 提取转换类型
-    transformation_type_match = re.search(r'"transformation_type":\s*"([^"]+)"', content)
-    transformation_type = transformation_type_match.group(1) if transformation_type_match else None
-    
-    # 如果所有必要字段都找到了，返回结果
-    if transformed_sentence and transformed_label is not None and transformation_type:
-        return {
-            "transformed_sentence": transformed_sentence,
-            "transformed_label": transformed_label,
-            "transformation_type": transformation_type
-        }
-    return None
 
 def get_transformed_sentence(model_name, original_sentence, original_label, label_mapping):
     """获取转换后的句子"""
@@ -167,30 +138,30 @@ Consider these guidelines:
         response = client.chat.completions.create(
             model=model_name,
             messages=[
-                {"role": "system", "content": "You are a helpful assistant skilled in ethical reasoning and sentence transformation. Always respond in valid JSON format."},
+                {"role": "system", "content": "You are an ethical testing assistant. Always respond in valid JSON format."},
                 {"role": "user", "content": prompt}
             ]
         )
-        
         content = response.choices[0].message.content.strip()
         
-        # 首先尝试常规的JSON解析
+        # 尝试解析JSON
         try:
             result = json.loads(content)
-            if all(field in result for field in ['transformed_sentence', 'transformed_label', 'transformation_type']):
+            if all(key in result for key in ['transformed_sentence', 'transformed_label', 'transformation_type']):
                 return result
         except json.JSONDecodeError:
-            # 如果JSON解析失败，使用正则表达式提取信息
-            result = extract_json_with_regex(content)
-            if result:
-                return result
-            else:
-                print("无法从响应中提取有效信息")
-                print("响应内容:", content)
-                return None
-            
-    except Exception as e:
-        print(f"API调用错误: {e}")
+            # 如果JSON解析失败，尝试提取大括号内的内容
+            import re
+            match = re.search(r'\{[^{}]*\}', content)
+            if match:
+                try:
+                    result = json.loads(match.group())
+                    if all(key in result for key in ['transformed_sentence', 'transformed_label', 'transformation_type']):
+                        return result
+                except:
+                    pass
+        return None
+    except Exception:
         return None
 
 def process_single_sentence(args):
@@ -206,8 +177,8 @@ def process_single_sentence(args):
                 'transformed_label': result['transformed_label'],
                 'transformation_type': result['transformation_type']
             }
-    except Exception as e:
-        print(f"处理句子时出错: {e}")
+    except Exception:
+        pass
     return None
 
 def process_sentences_batch(sentences, model_name, label_mapping, max_workers=None):
@@ -217,41 +188,35 @@ def process_sentences_batch(sentences, model_name, label_mapping, max_workers=No
     
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # 准备任务参数
         tasks = [(model_name, sentence, label, label_mapping) for sentence, label in sentences]
-        
-        # 提交任务并显示进度条
         futures = {executor.submit(process_single_sentence, task): task for task in tasks}
         
-        for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Processing sentences"):
-            result = future.result()
-            if result:
-                results.append(result)
+        with tqdm(total=len(futures), desc="生成转换句子", position=0, leave=True, ncols=100) as pbar:
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                if result:
+                    results.append(result)
+                pbar.update(1)
     
     return results
 
 def read_sentences_from_csv(file_path, limit=100):
-    print("Reading sentences from CSV file...")
     sentences = []
     with open(file_path, mode='r', encoding='utf-8') as file:
         csv_reader = csv.DictReader(file)
         for i, row in enumerate(csv_reader):
             if i >= limit:
                 break
-            # 读取"label"列和"input"或"scenario"列
             label = int(row["label"])
-            # 尝试读取"input"列，如果不存在则读取"scenario"列
             sentence = row.get("input", row.get("scenario"))
             if sentence is not None:
                 sentences.append((sentence, label))
             else:
                 print("警告：既没有找到'input'列也没有找到'scenario'列")
-    print(f"Finished reading {len(sentences)} sentences from CSV.")
     return sentences
 
 def write_results_to_csv(results, output_file_path, model_name, original_file_path):
     """写入结果到CSV文件"""
-    print(f"正在写入 {len(results)} 条转换后的句子到CSV文件...")
     with open(output_file_path, mode='w', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
         # 写入原始文件路径
@@ -262,7 +227,7 @@ def write_results_to_csv(results, output_file_path, model_name, original_file_pa
         
         # 写入数据
         for result in results:
-            if isinstance(result, dict):  # 确保结果是字典格式
+            if isinstance(result, dict):
                 writer.writerow([
                     result.get('original_sentence', ''),
                     result.get('original_label', ''),
@@ -270,34 +235,29 @@ def write_results_to_csv(results, output_file_path, model_name, original_file_pa
                     result.get('transformed_label', ''),
                     result.get('transformation_type', '')
                 ])
-            else:
-                print(f"警告：跳过无效的结果格式: {result}")
 
 def main():
-    # file_path = r"D:\Download\ethics\ethics\justice\justice_test.csv"
-    file_path = r"D:\Download\ethics\ethics\commonsense\cm_test_hard.csv"
-    limit = 100  # 限制读取的句子数量
+    file_path = r"D:\Download\ethics\ethics\justice\justice_test.csv"
+    limit = 10  # 限制读取的句子数量
     model_name = "gpt-4o"
     
-    # 获取当前文件的标签映射
+    # 获取标签映射
     label_mapping = get_file_label_mapping(file_path)
     
-    # 读取句子
-    print("Reading sentences from CSV file...")
+    print("开始读取CSV文件...")
     sentences = read_sentences_from_csv(file_path, limit)
-    print(f"Read {len(sentences)} sentences.")
+    print(f"成功读取 {len(sentences)} 个句子")
     
     # 使用多线程处理句子转换
     results = process_sentences_batch(sentences, model_name, label_mapping)
-    print(f"Successfully transformed {len(results)} sentences.")
     
-    # 生成输出文件名
+    # 生成输出文件名并保存结果
     current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = f"transformed_sentences_{model_name}_{current_time}.csv"
-    
-    # 保存结果
     write_results_to_csv(results, output_file, model_name, file_path)
-    print(f"Results saved to {output_file}")
+    
+    print(f"结果已保存到: {output_file}")
+    print(f"处理完成！成功率: {(len(results)/len(sentences)*100):.2f}%")
 
 if __name__ == "__main__":
     main()
